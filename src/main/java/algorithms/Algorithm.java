@@ -5,6 +5,27 @@ import java.util.Arrays;
 import java.util.StringJoiner;
 
 public class Algorithm {
+    private static double kahanSummation(double...vars) {
+        double sum = 0.0;
+        double x = 0.0;
+
+        for (double var : vars) {
+            double y = var - x;
+            double z = sum + y;
+            x = (z - sum) - y;
+            sum = z;
+        }
+
+        return sum;
+    }
+
+    private static double accurateMultiplication(double a, double b) {
+        BigDecimal multA = BigDecimal.valueOf(a);
+        BigDecimal multB = BigDecimal.valueOf(b);
+
+        return multA.multiply(multB).doubleValue();
+    }
+
     public static double maxSubVector(double[] A, int start, int end) {
         if (start > end || end > A.length) {
             throw new IllegalBoundException();
@@ -95,7 +116,8 @@ public class Algorithm {
 
         for (int i = 0; i < A.length; i++) {
             for (int j = start; j < end; j++) {
-                B[index++] = MA[i][j] * A[i];
+                B[index] = kahanSummation(B[index], accurateMultiplication(MA[i][j], A[i]));
+                index++;
             }
             index = 0;
         }
@@ -117,7 +139,7 @@ public class Algorithm {
             for (int j = start; j < end; j++) {
                 MX[i][x] = 0;
                 for (int k = 0; k < MA.length; k++) {
-                    MX[i][x] = MA[i][k] * MB[k][j];
+                    MX[i][x] = kahanSummation(MX[i][x], accurateMultiplication(MA[i][k], MB[k][j]));
                 }
                 x++;
             }
