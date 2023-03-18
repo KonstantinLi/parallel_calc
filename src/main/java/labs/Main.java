@@ -6,6 +6,9 @@ import data.Parser;
 import data.Type;
 
 import java.util.*;
+import java.util.concurrent.BrokenBarrierException;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.Semaphore;
 
 import static algorithms.Algorithm.*;
 
@@ -24,13 +27,14 @@ public class Main {
     private static double[][] MA, MD, ME, MM, MT, MZ;
     private static double[] A, B, D;
     private static AtomicDouble max_D;
-
-    private static final Object MD_synchronized = new Object();
-    private static final Object ME_synchronized = new Object();
-    private static final Object MZ_synchronized = new Object();
-    private static final Object D_synchronized = new Object();
-
     private static final int THREADS_NUMBER = Runtime.getRuntime().availableProcessors();
+
+    private static final CyclicBarrier MA_CYCLIC_BARRIER = new CyclicBarrier(THREADS_NUMBER + 1);
+    private static final CyclicBarrier A_CYCLIC_BARRIER = new CyclicBarrier(THREADS_NUMBER + 1);
+    private static final Semaphore MD_SEMAPHORE = new Semaphore(1);
+    private static final Semaphore ME_SEMAPHORE = new Semaphore(1);
+    private static final Semaphore MZ_SEMAPHORE = new Semaphore(1);
+    private static final Semaphore D_SEMAPHORE = new Semaphore(1);
 
     public static void main(String[] args) {
         calculateFirst();
@@ -61,11 +65,16 @@ public class Main {
             threads.add(thread);
         }
 
-        long start = System.currentTimeMillis();
+        try {
+            long start = System.currentTimeMillis();
 
-        awaitThreads(threads);
+            threads.forEach(Thread::start);
+            MA_CYCLIC_BARRIER.await();
 
-        System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
+            System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        } catch (InterruptedException | BrokenBarrierException ex) {
+            throw new RuntimeException(ex);
+        }
     }
 
     private static void calculateSecond() {
@@ -83,67 +92,69 @@ public class Main {
             threads.add(thread);
         }
 
-        long start = System.currentTimeMillis();
+        try {
+            long start = System.currentTimeMillis();
 
-        awaitThreads(threads);
+            threads.forEach(Thread::start);
+            A_CYCLIC_BARRIER.await();
 
-        System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
+            System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        } catch (InterruptedException | BrokenBarrierException ex) {
+             throw new RuntimeException(ex);
+        }
     }
 
     private static Runnable runnable_MA(int start, int end) {
         return () -> {
-            double[][] MX_i;
-            synchronized (MD_synchronized) {
-                MX_i = multiplySubMatrixAndMatrix(MD, MT, start, end);
-            }
+            try {
+                MD_SEMAPHORE.acquire();
+                double[][] MX_i = multiplySubMatrixAndMatrix(MD, MT, start, end);
+                MD_SEMAPHORE.release();
 
-            double[][] MY_i;
-            synchronized (ME_synchronized) {
-                MY_i = multiplySubMatrixAndMatrix(ME, MM, start, end);
-            }
+                ME_SEMAPHORE.acquire();
+                double[][]MY_i = multiplySubMatrixAndMatrix(ME, MM, start, end);
+                ME_SEMAPHORE.release();
 
-            double[][] MZ_i;
-            synchronized (MZ_synchronized) {
-                MZ_i = Arrays.stream(MZ)
-                        .map(row -> Arrays.copyOfRange(row, start, end))
-                        .toArray(double[][]::new);
-            }
+                MZ_SEMAPHORE.acquire();
+                double[][] MZ_i = Arrays.stream(MZ)
+                            .map(row -> Arrays.copyOfRange(row, start, end))
+                            .toArray(double[][]::new);
+                MZ_SEMAPHORE.release();
 
-            double[][] MA_i = differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
-            writeSubMatrix(MA, MA_i, start, end);
+                double[][] MA_i = differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
+                writeSubMatrix(MA, MA_i, start, end);
+
+                MA_CYCLIC_BARRIER.await();
+            } catch (InterruptedException | BrokenBarrierException ex) {
+                throw new RuntimeException(ex);
+            }
         };
     }
 
     private static Runnable runnable_A(int start, int end) {
         return () -> {
-            double[] C;
-            synchronized (D_synchronized) {
-                C = multiplySubMatrixAndVector(MT, D, start, end);
-            }
-
-            if (max_D == null) {
-                synchronized (D_synchronized) {
-                    max_D = new AtomicDouble(maxVector(D));
-                }
-            }
-            double max_Di = max_D.get();
-
-            double[] E = multiplySubVectorAndScalar(B, max_Di, start, end);
-            double[] A_i = differenceVectors(C, E);
-
-            writeSubVector(A, A_i, start, end);
-        };
-    }
-
-    private static void awaitThreads(Collection<Thread> threads) {
-        threads.forEach(Thread::run);
-        threads.forEach(thread -> {
             try {
-                thread.join();
-            } catch (InterruptedException ex) {
+                D_SEMAPHORE.acquire();
+                double[] C = multiplySubMatrixAndVector(MT, D, start, end);
+                D_SEMAPHORE.release();
+
+                if (max_D == null) {
+                    D_SEMAPHORE.acquire();
+                    max_D = new AtomicDouble(maxVector(D));
+                    D_SEMAPHORE.release();
+                }
+                double max_Di = max_D.get();
+
+                double[] E = multiplySubVectorAndScalar(B, max_Di, start, end);
+                double[] A_i = differenceVectors(C, E);
+
+                writeSubVector(A, A_i, start, end);
+
+                A_CYCLIC_BARRIER.await();
+            } catch (InterruptedException | BrokenBarrierException ex) {
                 throw new RuntimeException(ex);
             }
-        });
+        };
     }
 
     private static void generateData() {
