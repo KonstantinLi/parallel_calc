@@ -1,44 +1,41 @@
 package labs;
 
+import algorithms.ExpressionComputeException;
 import com.google.common.util.concurrent.AtomicDouble;
 import data.Generator;
 import data.Parser;
 import data.Type;
 
 import java.util.*;
-import java.util.concurrent.BrokenBarrierException;
-import java.util.concurrent.CyclicBarrier;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 
 import static algorithms.Algorithm.*;
 
 /**
  * Паралельні та розподілені обчислення
- * Лабораторна робота №1
+ * Лабораторна робота №3
  * Варіант 15
  * Завдання: 1) MA = MD*MT + MZ - ME*MM; 2) A = D*MT - max(D)*B
  * Ліненко Костянтин ІО-01
- * Дата 27.02.2023
+ * Дата 06.04.2023
  **/
 
 public class Main {
-    private static final String COMMENT = "1) MA = MD*MT + MZ - ME*MM; 2) A = D*MT - max(D)*B";
+    private static final String FIRST_EXPRESSION = "MA = MD*MT + MZ - ME*MM";
+    private static final String SECOND_EXPRESSION = "A = D*MT - max(D)*B";
 
     private static double[][] MA, MD, ME, MM, MT, MZ;
     private static double[] A, B, D;
     private static AtomicDouble max_D;
     private static final int THREADS_NUMBER = Runtime.getRuntime().availableProcessors();
-
-    private static final CyclicBarrier MA_CYCLIC_BARRIER = new CyclicBarrier(THREADS_NUMBER + 1);
-    private static final CyclicBarrier A_CYCLIC_BARRIER = new CyclicBarrier(THREADS_NUMBER + 1);
     private static final Semaphore MD_SEMAPHORE = new Semaphore(1);
     private static final Semaphore ME_SEMAPHORE = new Semaphore(1);
     private static final Semaphore MZ_SEMAPHORE = new Semaphore(1);
     private static final Semaphore D_SEMAPHORE = new Semaphore(1);
 
     public static void main(String[] args) {
-        calculateFirst();
-        calculateSecond();
+        calculateFirst(getExecutor());
+        calculateSecond(getExecutor());
 
         System.out.println("\nMA: ");
         printMatrix(MA);
@@ -47,7 +44,7 @@ public class Main {
         printVector(A);
     }
 
-    private static void calculateFirst() {
+    private static void calculateFirst(ExecutorService executor) {
         MA = new double[Generator.DEFAULT_SIZE][Generator.DEFAULT_SIZE];
         MD = Parser.parseMatrix("MD");
         ME = Parser.parseMatrix("ME");
@@ -55,52 +52,50 @@ public class Main {
         MT = Parser.parseMatrix("MT");
         MZ = Parser.parseMatrix("MZ");
 
-        List<Thread> threads = new ArrayList<>();
+        List<Runnable> tasks = new ArrayList<>();
 
         for (int i = 0; i < THREADS_NUMBER; i++) {
             int start = i * Generator.DEFAULT_SIZE / THREADS_NUMBER;
             int end = (i + 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
-
-            Thread thread = new Thread(runnable_MA(start, end));
-            threads.add(thread);
+            tasks.add(runnable_MA(start, end));
         }
 
+        long start = System.currentTimeMillis();
+
+        tasks.forEach(executor::execute);
+        executor.shutdown();
+
         try {
-            long start = System.currentTimeMillis();
-
-            threads.forEach(Thread::start);
-            MA_CYCLIC_BARRIER.await();
-
+            awaitTermination(executor);
             System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
-        } catch (InterruptedException | BrokenBarrierException ex) {
-            throw new RuntimeException(ex);
+        } catch (InterruptedException ex) {
+            throw new ExpressionComputeException(FIRST_EXPRESSION);
         }
     }
 
-    private static void calculateSecond() {
+    private static void calculateSecond(ExecutorService executor) {
         A = new double[Generator.DEFAULT_SIZE];
         B = Parser.parseVector("B");
         D = Parser.parseVector("D");
 
-        List<Thread> threads = new ArrayList<>();
+        List<Runnable> tasks = new ArrayList<>();
 
         for (int i = 0; i < THREADS_NUMBER; i++) {
             int start = i * Generator.DEFAULT_SIZE / THREADS_NUMBER;
             int end = (i + 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
-
-            Thread thread = new Thread(runnable_A(start, end));
-            threads.add(thread);
+            tasks.add(runnable_A(start, end));
         }
 
+        long start = System.currentTimeMillis();
+
+        tasks.forEach(executor::execute);
+        executor.shutdown();
+
         try {
-            long start = System.currentTimeMillis();
-
-            threads.forEach(Thread::start);
-            A_CYCLIC_BARRIER.await();
-
+            awaitTermination(executor);
             System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
-        } catch (InterruptedException | BrokenBarrierException ex) {
-             throw new RuntimeException(ex);
+        } catch (InterruptedException ex) {
+            throw new ExpressionComputeException(SECOND_EXPRESSION);
         }
     }
 
@@ -124,8 +119,7 @@ public class Main {
                 double[][] MA_i = differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
                 writeSubMatrix(MA, MA_i, start, end);
 
-                MA_CYCLIC_BARRIER.await();
-            } catch (InterruptedException | BrokenBarrierException ex) {
+            } catch (InterruptedException ex) {
                 throw new RuntimeException(ex);
             }
         };
@@ -150,11 +144,17 @@ public class Main {
 
                 writeSubVector(A, A_i, start, end);
 
-                A_CYCLIC_BARRIER.await();
-            } catch (InterruptedException | BrokenBarrierException ex) {
+            } catch (InterruptedException ex) {
                 throw new RuntimeException(ex);
             }
         };
+    }
+
+    private static void awaitTermination(ExecutorService executor) throws InterruptedException {
+        if (!executor.awaitTermination(1, TimeUnit.MINUTES)) {
+            executor.shutdownNow();
+            executor.awaitTermination(10, TimeUnit.SECONDS);
+        }
     }
 
     private static void generateData() {
@@ -167,6 +167,10 @@ public class Main {
             put("B", Type.VECTOR);
             put("D", Type.VECTOR);
         }};
-        Generator.write(variables, COMMENT);
+        Generator.write(variables, FIRST_EXPRESSION + "; " + SECOND_EXPRESSION);
+    }
+
+    private static ExecutorService getExecutor() {
+        return Executors.newFixedThreadPool(THREADS_NUMBER);
     }
 }
