@@ -3,24 +3,28 @@ package labs;
 import com.google.common.util.concurrent.AtomicDouble;
 import data.Generator;
 
-import java.util.concurrent.RecursiveAction;
+import java.util.AbstractMap;
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 import static algorithms.Algorithm.*;
 
-public class RecursiveSecondAction extends RecursiveAction {
+public class RunnableA implements Runnable {
     private static final int THREADS_NUMBER = Runtime.getRuntime().availableProcessors();
 
+    private final BlockingQueue<Map.Entry<double[], Bounds>> blockingQueue;
     private final int thread_number;
     private final Lock D_LOCK;
-
     private double[][] MT;
     private double[] A, B, D;
     private AtomicDouble max_D;
 
-    public RecursiveSecondAction(int thread_number, Lock d_LOCK) {
+    public RunnableA(int thread_number, Lock d_LOCK, BlockingQueue<Map.Entry<double[], Bounds>> blockingQueue) {
         this.thread_number = thread_number;
-        D_LOCK = d_LOCK;
+        this.D_LOCK = d_LOCK;
+        this.blockingQueue = blockingQueue;
     }
 
     public void setVariables(double[][] MT, double[] A, double[] B, double[] D, AtomicDouble max_D) {
@@ -32,7 +36,7 @@ public class RecursiveSecondAction extends RecursiveAction {
     }
 
     @Override
-    protected void compute() {
+    public void run() {
         int start = (thread_number - 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
         int end = thread_number * Generator.DEFAULT_SIZE / THREADS_NUMBER;
 
@@ -58,12 +62,13 @@ public class RecursiveSecondAction extends RecursiveAction {
         double[] E = multiplySubVectorAndScalar(B, max_Di, start, end);
 
         double[] A_i = differenceVectors(C, E);
-        writeSubVector(A, A_i, start, end);
 
-        if (thread_number < THREADS_NUMBER) {
-            RecursiveSecondAction subAction = new RecursiveSecondAction(thread_number + 1, D_LOCK);
-            subAction.setVariables(MT, A, B, D, max_D);
-            subAction.invoke();
+        Map.Entry<double[], Bounds> entry = new AbstractMap.SimpleEntry<>(A_i, new Bounds(start, end));
+
+        try {
+            blockingQueue.offer(entry, 10, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            throw new RuntimeException(ex);
         }
     }
 }

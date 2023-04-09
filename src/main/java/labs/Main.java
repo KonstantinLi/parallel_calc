@@ -1,6 +1,5 @@
 package labs;
 
-import algorithms.ExpressionComputeException;
 import com.google.common.util.concurrent.AtomicDouble;
 import data.Generator;
 import data.Parser;
@@ -15,7 +14,7 @@ import static algorithms.Algorithm.*;
 
 /**
  * Паралельні та розподілені обчислення
- * Лабораторна робота №5
+ * Лабораторна робота №6
  * Варіант 15
  * Завдання: 1) MA = MD*MT + MZ - ME*MM; 2) A = D*MT - max(D)*B
  * Ліненко Костянтин ІО-01
@@ -31,13 +30,16 @@ public class Main {
     private static final Lock MZ_LOCK = new ReentrantLock(true);
     private static final Lock D_LOCK = new ReentrantLock(true);
 
+    private static final BlockingQueue<Map.Entry<double[][], Bounds>> blockingQueueMA = new LinkedBlockingQueue<>();
+    private static final BlockingQueue<Map.Entry<double[], Bounds>> blockingQueueA = new LinkedBlockingQueue<>();
+
     private static double[][] MA, MD, ME, MM, MT, MZ;
     private static double[] A, B, D;
     private static AtomicDouble max_D;
 
     public static void main(String[] args) {
-        calculateFirst(getForkJoinPool());
-        calculateSecond(getForkJoinPool());
+        calculateFirst(getExecutor());
+        calculateSecond(getExecutor());
 
         System.out.println("\nMA: ");
         printMatrix(MA);
@@ -46,7 +48,7 @@ public class Main {
         printVector(A);
     }
 
-    private static void calculateFirst(ForkJoinPool pool) {
+    private static void calculateFirst(ExecutorService executor) {
         MA = new double[Generator.DEFAULT_SIZE][Generator.DEFAULT_SIZE];
         MD = Parser.parseMatrix("MD");
         ME = Parser.parseMatrix("ME");
@@ -56,36 +58,68 @@ public class Main {
 
         long start = System.currentTimeMillis();
 
-        RecursiveFirstAction firstAction = new RecursiveFirstAction(1, MD_LOCK, ME_LOCK, MZ_LOCK);
-        firstAction.setVariables(MA, MD, ME, MM, MT, MZ);
-        pool.invoke(firstAction);
+        List<RunnableMA> tasks = new ArrayList<>();
 
-        System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        for (int i = 1; i < THREADS_NUMBER; i++) {
+            RunnableMA task = new RunnableMA(i, MD_LOCK, ME_LOCK, MZ_LOCK, blockingQueueMA);
+            task.setVariables(MA, MD, ME, MM, MT, MZ);
+            tasks.add(task);
+        }
 
-        pool.shutdown();
+        tasks.forEach(executor::execute);
+
         try {
-            awaitTermination(pool);
+            int partResultNumber = 0;
+            while (++partResultNumber < THREADS_NUMBER) {
+                Map.Entry<double[][], Bounds> entry = blockingQueueMA.take();
+
+                double[][] MA_i = entry.getKey();
+                Bounds bounds = entry.getValue();
+
+                writeSubMatrix(MA, MA_i, bounds.getStart(), bounds.getEnd());
+            }
+
+            System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
+
+            executor.shutdown();
+            awaitTermination(executor);
         } catch (InterruptedException ex) {
             ex.printStackTrace();
         }
     }
 
-    private static void calculateSecond(ForkJoinPool pool) {
+    private static void calculateSecond(ExecutorService executor) {
         A = new double[Generator.DEFAULT_SIZE];
         B = Parser.parseVector("B");
         D = Parser.parseVector("D");
 
         long start = System.currentTimeMillis();
 
-        RecursiveSecondAction secondAction = new RecursiveSecondAction(1, D_LOCK);
-        secondAction.setVariables(MT, A, B, D, max_D);
-        pool.invoke(secondAction);
+        List<RunnableA> tasks = new ArrayList<>();
 
-        System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        for (int i = 1; i < THREADS_NUMBER; i++) {
+            RunnableA task = new RunnableA(i, D_LOCK, blockingQueueA);
+            task.setVariables(MT, A, B, D, max_D);
+            tasks.add(task);
+        }
 
-        pool.shutdown();
+        tasks.forEach(executor::execute);
+
         try {
-            awaitTermination(pool);
+            int partResultNumber = 0;
+            while (++partResultNumber < THREADS_NUMBER) {
+                Map.Entry<double[], Bounds> entry = blockingQueueA.take();
+
+                double[] A_i = entry.getKey();
+                Bounds bounds = entry.getValue();
+
+                writeSubVector(A, A_i, bounds.getStart(), bounds.getEnd());
+            }
+
+            System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
+
+            executor.shutdown();
+            awaitTermination(executor);
         } catch (InterruptedException ex) {
             ex.printStackTrace();
         }
@@ -111,11 +145,7 @@ public class Main {
         Generator.write(variables, FIRST_EXPRESSION + "; " + SECOND_EXPRESSION);
     }
 
-    private static ForkJoinPool getForkJoinPool() {
-        return new ForkJoinPool(
-                THREADS_NUMBER,
-                ForkJoinPool.defaultForkJoinWorkerThreadFactory,
-                null,
-                true);
+    private static ExecutorService getExecutor() {
+        return Executors.newFixedThreadPool(THREADS_NUMBER);
     }
 }

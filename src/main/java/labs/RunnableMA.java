@@ -2,16 +2,19 @@ package labs;
 
 import data.Generator;
 
+import java.util.AbstractMap;
 import java.util.Arrays;
-import java.util.concurrent.RecursiveAction;
+import java.util.Map;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 
 import static algorithms.Algorithm.*;
-import static algorithms.Algorithm.writeSubMatrix;
 
-public class RecursiveFirstAction extends RecursiveAction {
+public class RunnableMA implements Runnable {
     private static final int THREADS_NUMBER = Runtime.getRuntime().availableProcessors();
 
+    private final BlockingQueue<Map.Entry<double[][], Bounds>> blockingQueue;
     private final int thread_number;
     private final Lock MD_LOCK;
     private final Lock ME_LOCK;
@@ -19,11 +22,12 @@ public class RecursiveFirstAction extends RecursiveAction {
 
     private double[][] MA, MD, ME, MM, MT, MZ;
 
-    public RecursiveFirstAction(int thread_number, Lock MD_LOCK, Lock ME_LOCK, Lock MZ_LOCK) {
+    public RunnableMA(int thread_number, Lock MD_LOCK, Lock ME_LOCK, Lock MZ_LOCK, BlockingQueue<Map.Entry<double[][], Bounds>> blockingQueue) {
         this.thread_number = thread_number;
         this.MD_LOCK = MD_LOCK;
         this.ME_LOCK = ME_LOCK;
         this.MZ_LOCK = MZ_LOCK;
+        this.blockingQueue = blockingQueue;
     }
 
     public void setVariables(double[][] MA, double[][] MD, double[][] ME, double[][] MM, double[][] MT, double[][] MZ) {
@@ -36,7 +40,7 @@ public class RecursiveFirstAction extends RecursiveAction {
     }
 
     @Override
-    protected void compute() {
+    public void run() {
         int start = (thread_number - 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
         int end = thread_number * Generator.DEFAULT_SIZE / THREADS_NUMBER;
 
@@ -68,12 +72,13 @@ public class RecursiveFirstAction extends RecursiveAction {
         }
 
         double[][] MA_i = differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
-        writeSubMatrix(MA, MA_i, start, end);
 
-        if (thread_number < THREADS_NUMBER) {
-            RecursiveFirstAction subAction = new RecursiveFirstAction(thread_number + 1, MD_LOCK, ME_LOCK, MZ_LOCK);
-            subAction.setVariables(MA, MD, ME, MM, MT, MZ);
-            subAction.invoke();
+        Map.Entry<double[][], Bounds> entry = new AbstractMap.SimpleEntry<>(MA_i, new Bounds(start, end));
+
+        try {
+            blockingQueue.offer(entry, 10, TimeUnit.SECONDS);
+        } catch (InterruptedException ex) {
+            throw new RuntimeException(ex);
         }
     }
 }
