@@ -8,16 +8,18 @@ import data.Type;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 import static algorithms.Algorithm.*;
 
 /**
  * Паралельні та розподілені обчислення
- * Лабораторна робота №3
+ * Лабораторна робота №4
  * Варіант 15
  * Завдання: 1) MA = MD*MT + MZ - ME*MM; 2) A = D*MT - max(D)*B
  * Ліненко Костянтин ІО-01
- * Дата 06.04.2023
+ * Дата 10.04.2023
  **/
 
 public class Main {
@@ -28,10 +30,11 @@ public class Main {
     private static double[] A, B, D;
     private static AtomicDouble max_D;
     private static final int THREADS_NUMBER = Runtime.getRuntime().availableProcessors();
-    private static final Semaphore MD_SEMAPHORE = new Semaphore(1);
-    private static final Semaphore ME_SEMAPHORE = new Semaphore(1);
-    private static final Semaphore MZ_SEMAPHORE = new Semaphore(1);
-    private static final Semaphore D_SEMAPHORE = new Semaphore(1);
+
+    private static final Lock MD_LOCK = new ReentrantLock(true);
+    private static final Lock ME_LOCK = new ReentrantLock(true);
+    private static final Lock MZ_LOCK = new ReentrantLock(true);
+    private static final Lock D_LOCK = new ReentrantLock(true);
 
     public static void main(String[] args) {
         calculateFirst(getExecutor());
@@ -52,24 +55,38 @@ public class Main {
         MT = Parser.parseMatrix("MT");
         MZ = Parser.parseMatrix("MZ");
 
-        List<Runnable> tasks = new ArrayList<>();
+        Map<Callable<double[][]>, Bounds> tasks = new HashMap<>();
+
 
         for (int i = 0; i < THREADS_NUMBER; i++) {
             int start = i * Generator.DEFAULT_SIZE / THREADS_NUMBER;
             int end = (i + 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
-            tasks.add(runnable_MA(start, end));
+
+            tasks.put(callable_MA(start, end), new Bounds(start, end));
         }
 
         long start = System.currentTimeMillis();
 
-        tasks.forEach(executor::execute);
-        executor.shutdown();
+        try {
+            for (Callable<double[][]> task : tasks.keySet()) {
+                Bounds bounds = tasks.get(task);
 
+                Future<double[][]> future = executor.submit(task);
+                double[][] MA_i = future.get(30, TimeUnit.SECONDS);
+
+                writeSubMatrix(MA, MA_i, bounds.getStart(), bounds.getEnd());
+            }
+
+            System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        } catch (ExecutionException | InterruptedException | TimeoutException ex) {
+            throw new ExpressionComputeException(FIRST_EXPRESSION);
+        }
+
+        executor.shutdown();
         try {
             awaitTermination(executor);
-            System.out.println("MA calculated for " + (System.currentTimeMillis() - start) + " ms.");
         } catch (InterruptedException ex) {
-            throw new ExpressionComputeException(FIRST_EXPRESSION);
+            ex.printStackTrace();
         }
     }
 
@@ -78,75 +95,97 @@ public class Main {
         B = Parser.parseVector("B");
         D = Parser.parseVector("D");
 
-        List<Runnable> tasks = new ArrayList<>();
+        Map<Callable<double[]>, Bounds> tasks = new HashMap<>();
 
         for (int i = 0; i < THREADS_NUMBER; i++) {
             int start = i * Generator.DEFAULT_SIZE / THREADS_NUMBER;
             int end = (i + 1) * Generator.DEFAULT_SIZE / THREADS_NUMBER;
-            tasks.add(runnable_A(start, end));
+
+            tasks.put(callable_A(start, end), new Bounds(start, end));
         }
 
         long start = System.currentTimeMillis();
 
-        tasks.forEach(executor::execute);
-        executor.shutdown();
+        try {
+            for (Callable<double[]> task : tasks.keySet()) {
+                Bounds bounds = tasks.get(task);
 
+                Future<double[]> future = executor.submit(task);
+                double[] A_i = future.get(30, TimeUnit.SECONDS);
+
+                writeSubVector(A, A_i, bounds.getStart(), bounds.getEnd());
+            }
+
+            System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
+        } catch (ExecutionException | InterruptedException | TimeoutException ex) {
+            throw new ExpressionComputeException(FIRST_EXPRESSION);
+        }
+
+        executor.shutdown();
         try {
             awaitTermination(executor);
-            System.out.println("A calculated for " + (System.currentTimeMillis() - start) + " ms.");
         } catch (InterruptedException ex) {
-            throw new ExpressionComputeException(SECOND_EXPRESSION);
+            ex.printStackTrace();
         }
     }
 
-    private static Runnable runnable_MA(int start, int end) {
+    private static Callable<double[][]> callable_MA(int start, int end) {
         return () -> {
+            double[][] MX_i;
+            double[][] MY_i;
+            double[][] MZ_i;
+
+            MD_LOCK.lock();
             try {
-                MD_SEMAPHORE.acquire();
-                double[][] MX_i = multiplySubMatrixAndMatrix(MD, MT, start, end);
-                MD_SEMAPHORE.release();
-
-                ME_SEMAPHORE.acquire();
-                double[][]MY_i = multiplySubMatrixAndMatrix(ME, MM, start, end);
-                ME_SEMAPHORE.release();
-
-                MZ_SEMAPHORE.acquire();
-                double[][] MZ_i = Arrays.stream(MZ)
-                            .map(row -> Arrays.copyOfRange(row, start, end))
-                            .toArray(double[][]::new);
-                MZ_SEMAPHORE.release();
-
-                double[][] MA_i = differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
-                writeSubMatrix(MA, MA_i, start, end);
-
-            } catch (InterruptedException ex) {
-                throw new RuntimeException(ex);
+                MX_i = multiplySubMatrixAndMatrix(MD, MT, start, end);
+            } finally {
+                MD_LOCK.unlock();
             }
+
+            ME_LOCK.lock();
+            try {
+                MY_i = multiplySubMatrixAndMatrix(ME, MM, start, end);
+            } finally {
+                ME_LOCK.unlock();
+            }
+
+            MZ_LOCK.lock();
+            try {
+                MZ_i = Arrays.stream(MZ)
+                        .map(row -> Arrays.copyOfRange(row, start, end))
+                        .toArray(double[][]::new);
+            } finally {
+                MZ_LOCK.unlock();
+            }
+
+            return differenceMatrices(sumMatrices(MX_i, MZ_i), MY_i);
         };
     }
 
-    private static Runnable runnable_A(int start, int end) {
+    private static Callable<double[]> callable_A(int start, int end) {
         return () -> {
+            double[] C;
+
+            D_LOCK.lock();
             try {
-                D_SEMAPHORE.acquire();
-                double[] C = multiplySubMatrixAndVector(MT, D, start, end);
-                D_SEMAPHORE.release();
-
-                if (max_D == null) {
-                    D_SEMAPHORE.acquire();
-                    max_D = new AtomicDouble(maxVector(D));
-                    D_SEMAPHORE.release();
-                }
-                double max_Di = max_D.get();
-
-                double[] E = multiplySubVectorAndScalar(B, max_Di, start, end);
-                double[] A_i = differenceVectors(C, E);
-
-                writeSubVector(A, A_i, start, end);
-
-            } catch (InterruptedException ex) {
-                throw new RuntimeException(ex);
+                C = multiplySubMatrixAndVector(MT, D, start, end);
+            } finally {
+                D_LOCK.unlock();
             }
+
+            if (max_D == null) {
+                D_LOCK.lock();
+                try {
+                    max_D = new AtomicDouble(maxVector(D));
+                } finally {
+                    D_LOCK.unlock();
+                }
+            }
+
+            double max_Di = max_D.get();
+            double[] E = multiplySubVectorAndScalar(B, max_Di, start, end);
+
+            return differenceVectors(C, E);
         };
     }
 
